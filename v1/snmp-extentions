@@ -1,0 +1,20 @@
+
+# vmstat
+extend APR-vmstat-user /etc/apr/ext/vmstat user
+extend APR-vmstat-system /etc/apr/ext/vmstat system
+extend APR-vmstat-idle /etc/apr/ext/vmstat idle
+extend APR-vmstat-watime /etc/apr/ext/vmstat watime
+extend APR-vmstat-context-switches /etc/apr/ext/vmstat cs
+extend APR-vmstat-interrupts /etc/apr/ext/vmstat interrupts
+extend APR-vmstat-si /etc/apr/ext/vmstat si
+extend APR-vmstat-so /etc/apr/ext/vmstat so
+extend APR-vmstat-bi /etc/apr/ext/vmstat bi
+extend APR-vmstat-bo /etc/apr/ext/vmstat bo
+extend APR-vmstat-running /etc/apr/ext/vmstat running
+extend APR-vmstat-blocked /etc/apr/ext/vmstat blocked
+
+# mysql_status
+
+# apache_status
+
+
