@@ -5,7 +5,7 @@ greenText='\033[1;32m'
 
 APR_start_section="#####APR_START#####"
 APR_end_section="#####APR_END#####"
-getExtensionsLink="https://client-api.allprobe.com/v2/GetSnmpExtensions/"
+getExtensionsLink="http://api.allprobe.lcl/v2/GetSnmpExtensions/"
 apr_root=/etc/apr
 apr_log_root=/var/log/apr/
 system_scripts_local_dir=/etc/apr/cron/system/
@@ -86,7 +86,7 @@ function base64decode()
        echo "$1" | python -m base64 -d
       fi
     else
-      echo echo "$1" | base64 -di
+      echo "$1" | base64 -di
     fi
 }
 
@@ -154,7 +154,7 @@ esac
 
 function checkSnmpDaemon()
 {
-echo "Checking SNMP daemon"
+printf "Checking SNMP daemon\n"
 
 case "$(checkOS)" in
   "Debian" | "Proxmox" | "Ubuntu")
@@ -169,8 +169,10 @@ echo -e ""
 esac
 
 if (( $(ps -ef | grep -v grep | grep $snmp_daemon | wc -l ) < 1 )); then
-echo "SNMP daemon is not running, restarting.."
+printf "SNMP daemon is not running, restarting..\n"
 /etc/init.d/$snmp_daemon restart
+else
+printf "SNMP daemon running, doing nothing\n\n"
 fi
 
 
@@ -329,7 +331,7 @@ function echoNoInternetConnection
 
 function addIntegratorCron
 {
-  addConfToAPRSection "*/5 * * * * root $(which bash) /etc/apr/integrator.sh cron | tee -a $cron_log >/dev/null 2>&1" /etc/crontab
+  addConfToAPRSection "*/5 * * * * root $(which bash) /etc/apr/integrator.sh $2  | tee -a $cron_log >/dev/null 2>&1" /etc/crontab
 }
 
 function deleteAllFiles
@@ -338,14 +340,39 @@ function deleteAllFiles
   rm -f $system_extend_dir*
 }
 
+function commit
+{
+    # Remove APR sections.
+    removeAPRSection /etc/crontab
+    removeAPRSection /etc/snmp/snmpd.conf
+
+    # Adding APR sections.
+    addAPRSection /etc/crontab
+    addAPRSection /etc/snmp/snmpd.conf
+
+    # Comment out default binding
+    sed -e '/agentAddress  udp:127.0.0.1:161/ s/^#*/#/' -i /etc/snmp/snmpd.conf
+
+    addIntegratorCron
+    addSnmpConfs "$1"
+    addCrons "$1"
+    deleteAllFiles
+
+    downloadSnmpScripts "$1"
+    downloadCronScripts "$1"
+
+    runCustomProcedures "$1"
+
+    restartServices
+}
+
 install(){
-  echo -e "${greenText}-----AllProbe SNMP extensions integrator installation----- \n\nThis host ($(checkOS)) token is${noColor}: $(thisTokenId)"
+    echo -e "${greenText}-----AllProbe SNMP extensions integrator installation----- \n\nThis host ($(checkOS)) token is${noColor}: $(thisTokenId)"
 
-  createDirs
+    createDirs
 
-    # Setting integrator script in place.
     if isFirstRun ; then
-      echo "Integrator not found, copying from /tmp into /etc/apr/ ..."
+      echo "Integrator not found, downloading & copying from /tmp into /etc/apr/ ..."
       if [ -f /tmp/integrator.sh ]; then
       cp /tmp/integrator.sh /etc/apr/
       fi
@@ -356,13 +383,12 @@ install(){
       chmod +x /etc/apr/integrator.sh
     fi
 
-
-  confEncoded=$(fetchRemoteConfs)
+    confEncoded=$(fetchRemoteConfs)
 
 # TODO: base64 output check rather then empty string
 if [ -n "$confEncoded" ]; then
 
-    allConfsDecoded=$(base64decode $confEncoded)
+    allConfsDecoded=$(base64decode $confEncoded | grep -Ev "^$")
 
     echo "$confEncoded"
 
@@ -372,32 +398,23 @@ if [ -n "$confEncoded" ]; then
       touch /etc/apr/buffer.tmp
     fi
 
-    # Remove APR sections.
-    removeAPRSection /etc/crontab
-    removeAPRSection /etc/snmp/snmpd.conf
-
-    # Adding APR sections.
-    addAPRSection /etc/crontab
-    addAPRSection /etc/snmp/snmpd.conf
-
-    # Add relevant confs
-    allConfsDecoded=$(base64decode $confEncoded)
-
-    # Comment out default binding
-    sed -e '/agentAddress  udp:127.0.0.1:161/ s/^#*/#/' -i /etc/snmp/snmpd.conf
-
-    addIntegratorCron
-    addSnmpConfs "$allConfsDecoded"
-    addCrons "$allConfsDecoded"
-    deleteAllFiles
-
-    downloadSnmpScripts "$allConfsDecoded"
-    downloadCronScripts "$allConfsDecoded"
-
-    runCustomProcedures "$allConfsDecoded"
+    case "$1" in
+    normal) commit "$allConfsDecoded";;
+    preventive)
+        printf "\nRunning preventive mode... delaying commit changes\n" >&2
+        touch "$system_buffer_dir/extensions.buffer"
+    ;;
+    secure)
+        printf "\nRunning secure mode... writing changes to commit buffer\n" >&2
+    ;;
+    *)
+          echo "\nNo argument passed choosing normal security mode\n" >&2
+          commit "$allConfsDecoded"
+    ;;
+    esac
 
     echo "$allConfsDecoded" > "$system_buffer_dir/extensions.list"
-    restartServices
+
 else
     echoNoInternetConnection
 fi
@@ -417,36 +434,40 @@ cron()
 # TODO: base64 output check rather then empty string
 if [ -n "$confEncoded" ]; then
 
-    allConfsDecoded=$(base64decode $confEncoded)
+    allConfsDecoded=$(base64decode $confEncoded | grep -Ev "^$")
 
     if isDifferent "$allConfsDecoded" "$(cat "$system_buffer_dir/extensions.list")";then
 
         echo "different config found!"
-        removeAPRSection /etc/crontab
-        removeAPRSection /etc/snmp/snmpd.conf
-        addAPRSection /etc/crontab
-        addAPRSection /etc/snmp/snmpd.conf
 
-        addIntegratorCron
-
-        addSnmpConfs "$allConfsDecoded"
-        addCrons "$allConfsDecoded"
-
-        deleteAllFiles
-
-        downloadSnmpScripts "$allConfsDecoded"
-        downloadCronScripts "$allConfsDecoded"
-
-        runCustomProcedures "$allConfsDecoded"
+        case "$1" in
+        normal) commit "$allConfsDecoded";;
+        preventive)
+            printf "\nRunning preventive mode... delaying commit changes\n" >&2
+            touch "$system_buffer_dir/extensions.buffer"
+        ;;
+        secure)
+            printf "\nRunning secure mode... writing changes to commit buffer\n" >&2
+        ;;
+        *)
+              printf "\nNo argument passed choosing normal security mode\n" >&2
+              commit "$allConfsDecoded"
+        ;;
+        esac
 
         echo "$allConfsDecoded" > "$system_buffer_dir/extensions.list"
 
-        restartServices
-  else
-    echo -e "${greenText}same config found. nothing changed.${noColor}"
-  fi
+    else
+        printf "Same config found. nothing changed.\n"
 
-  #  echo -e "$allConfsDecoded" > "$system_buffer_dir/extensions.list"
+        if [ `stat --format=%Y "$system_buffer_dir/extensions.list"` -le $(( `date +%s` - 43200 )) ]; then
+            allConfsDecoded=`cat $system_buffer_dir/extensions.list`
+            commit "$allConfsDecoded"
+            printf "\n"
+        fi
+
+        printf "\n"
+    fi
 else
     echoNoInternetConnection
 fi
@@ -465,12 +486,40 @@ purge()
   restartServices
 }
 
+
 case "$1" in
-  install)   install ;;
+install)
+  case "$2" in
+  normal) install normal;;
+  preventive) install preventive;;
+  secure) install secure;;
+  *)
+  printf "usage: $1 normal | preventive | secure\n" >&2
+  printf "Choosing normal install\n\n" >&2
+  install normal
+  ;;
+  esac
+  ;;
 purge)    purge ;;
-reinstall) purge; install ;;
-cron) cron ;;
-*) echo "usage: $0 install|purge|reinstall|cron" >&2
+reinstall) purge; install normal;;
+cron)
+  case "$2" in
+  normal) cron normal;;
+  preventive) cron preventive;;
+  secure) cron secure;;
+  *)
+  printf "usage: $1 normal | preventive | secure\n" >&2
+  printf "Choosing normal install\n\n" >&2
+  cron
+  ;;
+  esac
+;;
+commit)
+  allConfsDecoded=`cat $system_buffer_dir/extensions.list`
+  commit "$allConfsDecoded"
+  printf "\n\n"
+  ;;
+*) echo "usage: $0 install | purge | reinstall | cron" >&2
 exit 1
 ;;
 esac
