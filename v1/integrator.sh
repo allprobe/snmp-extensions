@@ -116,10 +116,13 @@ if isFirstRun; then
   apt-get -y install snmpd
   apt-get -y install mysql-client
   apt-get -y install which
+  apt-get -y install curl
+  apt-get -y install sed
 fi
 ;;
 "CentOS" | "Fedora")
 yum -y install net-snmp mysql-client which
+yum -y install curl sed
 ;;
 *)
 echo -e "${greenText}Error recognizing linux distribution!${noColor}\n"
@@ -329,9 +332,21 @@ function echoNoInternetConnection
     echo -e ""
 }
 
+
+
 function addIntegratorCron
 {
-  addConfToAPRSection "*/5 * * * * root $(which bash) /etc/apr/integrator.sh $2  | tee -a $cron_log >/dev/null 2>&1" /etc/crontab
+    if [ -z "$2" ]; then
+        addConfToAPRSection "*/5 * * * * root $(which bash) /etc/apr/integrator.sh cron $1 | tee -a $cron_log >/dev/null 2>&1" /etc/crontab
+    else
+        addConfToAPRSection "$2" /etc/crontab
+    fi
+
+}
+
+function removeIntegratorCron
+{
+  sed -i '/integrator.sh/d' /etc/crontab
 }
 
 function deleteAllFiles
@@ -343,6 +358,18 @@ function deleteAllFiles
 function commit
 {
     # Remove APR sections.
+
+    buffer=$(grep "integrator.sh" /etc/crontab)
+
+    if [ -z "$buffer" ]; then
+        echo "Integrator cron not found.. adding new"
+        cron_extra_arg=""
+
+    else
+        echo "Cron exists"
+        cron_extra_arg="$buffer"
+    fi
+
     removeAPRSection /etc/crontab
     removeAPRSection /etc/snmp/snmpd.conf
 
@@ -353,7 +380,7 @@ function commit
     # Comment out default binding
     sed -e '/agentAddress  udp:127.0.0.1:161/ s/^#*/#/' -i /etc/snmp/snmpd.conf
 
-    addIntegratorCron
+    addIntegratorCron "$2" "$cron_extra_arg"
     addSnmpConfs "$1"
     addCrons "$1"
     deleteAllFiles
@@ -399,17 +426,23 @@ if [ -n "$confEncoded" ]; then
     fi
 
     case "$1" in
-    normal) commit "$allConfsDecoded";;
+    normal) commit "$allConfsDecoded" "$1";;
     preventive)
         printf "\nRunning preventive mode... delaying commit changes\n" >&2
         touch "$system_buffer_dir/extensions.buffer"
+
+        removeIntegratorCron
+        addIntegratorCron "$1"
     ;;
     secure)
         printf "\nRunning secure mode... writing changes to commit buffer\n" >&2
+
+        removeIntegratorCron
+        addIntegratorCron "$1"
     ;;
     *)
           echo "\nNo argument passed choosing normal security mode\n" >&2
-          commit "$allConfsDecoded"
+          commit "$allConfsDecoded" normal
     ;;
     esac
 
@@ -441,7 +474,7 @@ if [ -n "$confEncoded" ]; then
         echo "different config found!"
 
         case "$1" in
-        normal) commit "$allConfsDecoded";;
+        normal) commit "$allConfsDecoded" "$1";;
         preventive)
             printf "\nRunning preventive mode... delaying commit changes\n" >&2
             touch "$system_buffer_dir/extensions.buffer"
@@ -451,7 +484,7 @@ if [ -n "$confEncoded" ]; then
         ;;
         *)
               printf "\nNo argument passed choosing normal security mode\n" >&2
-              commit "$allConfsDecoded"
+              commit "$allConfsDecoded" normal
         ;;
         esac
 
@@ -459,11 +492,21 @@ if [ -n "$confEncoded" ]; then
 
     else
         printf "Same config found. nothing changed.\n"
+        buffer_age=`stat --format=%Y "$system_buffer_dir/extensions.list"`
+        current_ts=$((`date +%s` - 43200))
+        tsdiff=$((buffer_age-current_ts))
 
-        if [ `stat --format=%Y "$system_buffer_dir/extensions.list"` -le $(( `date +%s` - 43200 )) ]; then
-            allConfsDecoded=`cat $system_buffer_dir/extensions.list`
-            commit "$allConfsDecoded"
-            printf "\n"
+        if [ -f "$system_buffer_dir/extensions.buffer" ]; then
+            if [ $buffer_age -le $((current_ts)) ]; then
+                allConfsDecoded=`cat $system_buffer_dir/extensions.list`
+                printf "Preventing buffer older then 12 hour commiting configurations"
+                commit "$allConfsDecoded" "$1"
+                rm -f "$system_buffer_dir/extensions.buffer"
+                printf "\n"
+            else
+                printf "Preventing buffer is not older then 12 hour, doing nothing.\n"
+                printf "Will auto commit in $tsdiff Seconds"
+            fi
         fi
 
         printf "\n"
@@ -501,7 +544,6 @@ install)
   esac
   ;;
 purge)    purge ;;
-reinstall) purge; install normal;;
 cron)
   case "$2" in
   normal) cron normal;;
@@ -519,7 +561,7 @@ commit)
   commit "$allConfsDecoded"
   printf "\n\n"
   ;;
-*) echo "usage: $0 install | purge | reinstall | cron" >&2
+*) echo "usage: $0 install | purge | cron" >&2
 exit 1
 ;;
 esac
