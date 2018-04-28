@@ -5,8 +5,10 @@ greenText='\033[1;32m'
 
 APR_start_section="#####APR_START#####"
 APR_end_section="#####APR_END#####"
-getExtensionsLink="http://api.allprobe.lcl/v2/GetSnmpExtensions/"
+getExtensionsLink="https://client-api.allprobe.com/v2/GetSnmpExtensions/"
+sendApiNotification="https://client-api.allprobe.com/v2/PutIntegratorNotification/"
 apr_root=/etc/apr
+wget_cli="wget"
 apr_log_root=/var/log/apr/
 system_scripts_local_dir=/etc/apr/cron/system/
 user_scripts_local_dir=/etc/apr/cron/user/
@@ -219,10 +221,11 @@ sed -i "/$APR_end_section/i $1" $2
 
 function fetchRemoteConfs
 {
-  downloaded_conf_output="$(wget --no-check-certificate -O- -q "$getExtensionsLink$(thisTokenId)")"
+  downloaded_conf_output="$($wget_cli -O- -q "$getExtensionsLink$(thisTokenId)")"
 
   echo $downloaded_conf_output
 }
+
 
 function addSnmpConfs
 {
@@ -279,7 +282,7 @@ function downloadSnmpScripts
       continue
     fi
     echo "Downloading $line..."
-    wget --no-check-certificate -q -P "$system_extend_dir" "$line"
+    $wget_cli -q -P "$system_extend_dir" "$line"
   done <<< "$snmpScripts"
   chmod +x -R "$system_extend_dir"
   fi
@@ -299,7 +302,7 @@ while read -r line; do
     continue
   fi
   echo "Downloading $line..."
-  wget --no-check-certificate -q -P "$system_scripts_local_dir" "$line"
+  $wget_cli -q -P "$system_scripts_local_dir" "$line"
 done <<< "$cronScripts"
 chmod +x -R "$system_scripts_local_dir"
   fi
@@ -332,7 +335,17 @@ function echoNoInternetConnection
     echo -e ""
 }
 
-
+function sendEmail
+{
+    echo "Pushing API notification"
+    if [[ -z `command -v curl`  ]];then
+        output="$($wget_cli -O- -q "$sendApiNotification$1/$2/$(thisTokenId)")"
+        echo $output
+    else
+        output="$(curl -i  -X PUT -d "$3" "$sendApiNotification$1/$2/$(thisTokenId)")"
+        echo "$output"
+    fi
+}
 
 function addIntegratorCron
 {
@@ -341,7 +354,6 @@ function addIntegratorCron
     else
         addConfToAPRSection "$2" /etc/crontab
     fi
-
 }
 
 function removeIntegratorCron
@@ -425,20 +437,24 @@ if [ -n "$confEncoded" ]; then
       touch /etc/apr/buffer.tmp
     fi
 
+    removeIntegratorCron
+    addIntegratorCron "$1"
+
     case "$1" in
-    normal) commit "$allConfsDecoded" "$1";;
+    normal)
+        commit "$allConfsDecoded" "$1"
+        sendEmail "1" "normal" $confEncoded
+        ;;
     preventive)
         printf "\nRunning preventive mode... delaying commit changes\n" >&2
         touch "$system_buffer_dir/extensions.buffer"
 
-        removeIntegratorCron
-        addIntegratorCron "$1"
+        sendEmail "1" "preventive" $confEncoded
     ;;
     secure)
         printf "\nRunning secure mode... writing changes to commit buffer\n" >&2
 
-        removeIntegratorCron
-        addIntegratorCron "$1"
+        sendEmail "1" "secure" $confEncoded
     ;;
     *)
           echo "\nNo argument passed choosing normal security mode\n" >&2
@@ -474,17 +490,23 @@ if [ -n "$confEncoded" ]; then
         echo "different config found!"
 
         case "$1" in
-        normal) commit "$allConfsDecoded" "$1";;
+        normal)
+            commit "$allConfsDecoded" "$1"
+            sendEmail "2" "normal" $confEncoded
+            ;;
         preventive)
             printf "\nRunning preventive mode... delaying commit changes\n" >&2
             touch "$system_buffer_dir/extensions.buffer"
+            sendEmail "2" "preventive" $confEncoded
         ;;
         secure)
             printf "\nRunning secure mode... writing changes to commit buffer\n" >&2
+            sendEmail "2" "secure" $confEncoded
         ;;
         *)
               printf "\nNo argument passed choosing normal security mode\n" >&2
               commit "$allConfsDecoded" normal
+              sendEmail "2" "normal" $confEncoded
         ;;
         esac
 
@@ -565,3 +587,4 @@ commit)
 exit 1
 ;;
 esac
+
