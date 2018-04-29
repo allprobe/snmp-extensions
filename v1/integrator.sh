@@ -3,6 +3,7 @@
 noColor='\033[0m'
 greenText='\033[1;32m'
 
+version="1.31"
 APR_start_section="#####APR_START#####"
 APR_end_section="#####APR_END#####"
 getExtensionsLink="https://client-api.allprobe.com/v2/GetSnmpExtensions/"
@@ -224,7 +225,7 @@ function checkIptables
 printf "Checking iptables UDP port 161 rules\n"
 
 while read p; do
-  buffer=`iptables -L | grep "$p"`
+  buffer=`iptables -nL | grep "$p"`
     if [[ -z "$buffer" ]]; then
       iptables -I INPUT 1 -p udp -s "$p" --dport 161 -j ACCEPT
       iptables -I INPUT 1 -p udp --sport 161 -d "$p" -j ACCEPT
@@ -272,7 +273,7 @@ sed -i "/$APR_end_section/i $1" $2
 
 function fetchRemoteConfs
 {
-  downloaded_conf_output="$($wget_cli -O- -q "$getExtensionsLink$(thisTokenId)")"
+  downloaded_conf_output="$($wget_cli -O- -q "$getExtensionsLink$(thisTokenId)/$version")"
 
   echo $downloaded_conf_output
 }
