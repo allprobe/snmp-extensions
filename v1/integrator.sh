@@ -35,11 +35,13 @@ function checkOS
       echo "CentOS"
     fi
     if [[ $fullOSInfo == *"Fedora"* ]]; then
-
       echo "Fedora"
     fi
     if [[ $fullOSInfo == *"Proxmox"* ]]; then
       echo "Proxmox"
+    fi
+    if [[ $fullOSInfo == *"XenServer"* ]]; then
+      echo "XenServer"
     fi
   else
     fullOSInfo=$(cat /etc/*-release)
@@ -57,6 +59,9 @@ function checkOS
     fi
     if [[ $fullOSInfo == *"Proxmox"* ]]; then
       echo "Proxmox"
+    fi
+    if [[ $fullOSInfo == *"XenServer"* ]]; then
+      echo "XenServer"
     fi
   fi
 }
@@ -92,6 +97,23 @@ function base64decode()
     fi
 }
 
+function base64encode()
+{
+    if [[ -z `command -v base64`  ]];then
+      if [[ -z `command -v python` ]];then
+        if [[ -z `command -v perl` ]];then
+          exit 1
+        else
+          perl -MMIME::Base64 -ne 'printf "%s\n",encode_base64($_)' <<< "$1"
+        fi
+      else
+       echo "$1" | python -m base64 -e
+      fi
+    else
+      echo "$1" | base64 -i
+    fi
+}
+
 function isDifferent
 {
   if [ "$1" == "$2" ]
@@ -113,8 +135,6 @@ echo -e "${greenText}Installing required software from OS repository..${noColor}
 case "$(checkOS)" in
   "Debian" | "Proxmox" | "Ubuntu")
 if isFirstRun; then
-  # TODO: check if needed
-  # apt-get update
   apt-get -y install snmpd
   apt-get -y install mysql-client
   apt-get -y install which
@@ -123,8 +143,16 @@ if isFirstRun; then
 fi
 ;;
 "CentOS" | "Fedora")
-yum -y install net-snmp mysql-client which
-yum -y install curl sed
+if isFirstRun; then
+  yum -y install net-snmp mysql-client which
+  yum -y install curl sed
+fi
+;;
+"XenServer")
+if isFirstRun; then
+  yum -y --enablerepo base,extras,updates install net-snmp mysql-client which
+  yum -y --enablerepo base,extras,updates install curl sed
+fi
 ;;
 *)
 echo -e "${greenText}Error recognizing linux distribution!${noColor}\n"
@@ -151,6 +179,11 @@ echo ""
   /etc/init.d/$cron_daemon restart
 echo ""
 ;;
+"XenServer")
+    service snmpd restart
+    service crond restart
+echo ""
+;;
 *)
 echo -e "\n${greenText}Error recognizing linux distribution!${noColor}"
 ;;
@@ -168,6 +201,9 @@ case "$(checkOS)" in
 "CentOS" | "Fedora")
   snmp_daemon="snmpd"
 ;;
+"XenServer")
+  snmp_daemon="snmpd"
+;;
 *)
 echo -e ""
 ;;
@@ -175,13 +211,28 @@ esac
 
 if (( $(ps -ef | grep -v grep | grep $snmp_daemon | wc -l ) < 1 )); then
 printf "SNMP daemon is not running, restarting..\n"
-/etc/init.d/$snmp_daemon restart
+service "$snmp_daemon" restart
 else
-printf "SNMP daemon running, doing nothing\n\n"
+printf "SNMP daemon running, doing nothing\n"
 fi
-
+printf "\n"
 
 }
+
+function checkIptables
+{
+printf "Checking iptables UDP port 161 rules\n"
+
+while read p; do
+  buffer=`iptables -L | grep "$p"`
+    if [[ -z "$buffer" ]]; then
+      iptables -I INPUT 1 -p udp -s "$p" --dport 161 -j ACCEPT
+      iptables -I INPUT 1 -p udp --sport 161 -d "$p" -j ACCEPT
+      printf "Adding "$p" to iptables rules for SNMP UDP port 161, running now\n"
+    fi
+done </etc/apr/probe.subnets
+}
+
 function createDirs
 {
   echo -e "\n${greenText}Creating root directories${noColor}"
@@ -226,12 +277,19 @@ function fetchRemoteConfs
   echo $downloaded_conf_output
 }
 
+function saveProbersSubnets
+{
+subnets=$(echo "$1" | sed -n "/#probers-subnes#/,/#probers-subnes_end#/p" | sed '1d; $d')
+printf "\nsetting probers subnets\n"
+printf "$subnets\n\n"
+
+echo "$subnets" > /etc/apr/probe.subnets
+}
 
 function addSnmpConfs
 {
 # echo "$1"
 snmpConfs=$(echo "$1" | sed -n "/#snmpd#/,/#snmpd_end#/p" | sed '1d; $d')
-# snmpConfs=$(echo "$1" | sed -n -e '/^snmpd$/,/^snmpd_end$/{ /^snmpd$/d; /^snmpd_end$/d; p; }')
 echo -e "\nsetting configs at ${greenText}/etc/snmp/snmpd.conf${noColor}:\n$snmpConfs\n"
 
 while read -r line; do
@@ -342,7 +400,19 @@ function sendEmail
         output="$($wget_cli -O- -q "$sendApiNotification$1/$2/$(thisTokenId)")"
         echo $output
     else
-        output="$(curl -i  -X PUT -d "$3" "$sendApiNotification$1/$2/$(thisTokenId)")"
+        allConfsDecoded=$(base64decode $3 | grep -Ev "^$")
+        allConfsDecodedMutated=` echo "$allConfsDecoded" | sed '/custom-procedure/,/custom-procedure_end/{//!d}'`
+        allConfsEncodedMutated=`base64encode "$allConfsDecodedMutated"`
+        buffer=`echo $allConfsDecoded | grep "#snmpd#"`
+
+        if [[ ! -z $buffer ]]; then
+            output="$(curl -i  -X PUT -d "$allConfsEncodedMutated" "$sendApiNotification$1/$2/$(thisTokenId)")"
+        else
+            if [[ $1 == *"1"* ]]; then
+                output="$(curl -i  -X PUT -d "$allConfsEncodedMutated" "$sendApiNotification$1/$2/$(thisTokenId)")"
+            fi
+        fi
+
         echo "$output"
     fi
 }
@@ -402,6 +472,8 @@ function commit
 
     runCustomProcedures "$1"
 
+    rm -f "$system_buffer_dir/extensions.buffer"
+
     restartServices
 }
 
@@ -437,6 +509,8 @@ if [ -n "$confEncoded" ]; then
       touch /etc/apr/buffer.tmp
     fi
 
+    saveProbersSubnets "$allConfsDecoded"
+
     removeIntegratorCron
     addIntegratorCron "$1"
 
@@ -464,11 +538,13 @@ if [ -n "$confEncoded" ]; then
 
     echo "$allConfsDecoded" > "$system_buffer_dir/extensions.list"
 
+    checkIptables
+
 else
     echoNoInternetConnection
 fi
 
-
+    checkSnmpDaemon
 }
 
 cron()
@@ -488,6 +564,8 @@ if [ -n "$confEncoded" ]; then
     if isDifferent "$allConfsDecoded" "$(cat "$system_buffer_dir/extensions.list")";then
 
         echo "different config found!"
+
+        saveProbersSubnets "$allConfsDecoded"
 
         case "$1" in
         normal)
@@ -537,6 +615,7 @@ else
     echoNoInternetConnection
 fi
 fi
+    checkIptables
     checkSnmpDaemon
 }
 
