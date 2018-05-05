@@ -3,7 +3,7 @@
 noColor='\033[0m'
 greenText='\033[1;32m'
 
-version="1.31"
+version="1.32"
 APR_start_section="#####APR_START#####"
 APR_end_section="#####APR_END#####"
 getExtensionsLink="https://client-api.allprobe.com/v2/GetSnmpExtensions/"
@@ -420,10 +420,15 @@ function sendEmail
 
 function addIntegratorCron
 {
-    if [ -z "$2" ]; then
-        addConfToAPRSection "*/5 * * * * root $(which bash) /etc/apr/integrator.sh cron $1 | tee -a $cron_log >/dev/null 2>&1" /etc/crontab
+    if [ -z "$3" ]; then
+        if [ -z "$2" ]; then
+            buffer="5"
+        else
+            buffer="$2"
+        fi
+        addConfToAPRSection "*/"$buffer" * * * * root $(which bash) /etc/apr/integrator.sh cron $1 | tee -a $cron_log >/dev/null 2>&1" /etc/crontab
     else
-        addConfToAPRSection "$2" /etc/crontab
+        addConfToAPRSection "$3" /etc/crontab
     fi
 }
 
@@ -463,7 +468,7 @@ function commit
     # Comment out default binding
     sed -e '/agentAddress  udp:127.0.0.1:161/ s/^#*/#/' -i /etc/snmp/snmpd.conf
 
-    addIntegratorCron "$2" "$cron_extra_arg"
+    addIntegratorCron "$2" "" "$cron_extra_arg"
     addSnmpConfs "$1"
     addCrons "$1"
     deleteAllFiles
@@ -510,10 +515,13 @@ if [ -n "$confEncoded" ]; then
       touch /etc/apr/buffer.tmp
     fi
 
+    removeAPRSection /etc/crontab
+    addAPRSection /etc/crontab
+
     saveProbersSubnets "$allConfsDecoded"
 
     removeIntegratorCron
-    addIntegratorCron "$1"
+    addIntegratorCron "$1" "$2"
 
     case "$1" in
     normal)
@@ -635,9 +643,9 @@ purge()
 case "$1" in
 install)
   case "$2" in
-  normal) install normal;;
-  preventive) install preventive;;
-  secure) install secure;;
+  normal) install normal "$3";;
+  preventive) install preventive "$3";;
+  secure) install secure "$3";;
   *)
   printf "usage: $1 normal | preventive | secure\n" >&2
   printf "Choosing normal install\n\n" >&2
